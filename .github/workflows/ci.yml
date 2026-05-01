@@ -181,18 +181,6 @@
               "runs-on" : "ubuntu-latest"
             },
             {
-              "target-name" : "vita",
-              "artifact-to-archive" : "",
-              "artifact-path" : "build/*.vpk",
-              "example-project-path" : ".",
-              "cmake-extra-configure-prepend" : "",
-              "cmake-extra-configure-append" : "-DCMAKE_TOOLCHAIN_FILE=${VITASDK}/share/vita.toolchain.cmake -DEMBED_DATA_PATH=data.xp3",
-              "container" : "vitasdk/vitasdk:latest",
-              "container-options" : " ",
-              "has-brew" : "false",
-              "runs-on" : "ubuntu-latest"
-            },
-            {
               "target-name" : "switch",
               "artifact-to-archive" : "",
               "artifact-path" : "build/*.nro",
@@ -496,7 +484,7 @@
         },
         {
           "name" : "Prepare artifacts for release",
-          "run" : "cp -t . ${{ github.event.repository.name }}-*/*.zip\ncp -t . ${{ github.event.repository.name }}-*/*.tar.gz\ncp -t . ${{ github.event.repository.name }}-android/krkrsdl2.apk\ncp -t . ${{ github.event.repository.name }}-vita/krkrsdl2.vpk\ncp -t . ${{ github.event.repository.name }}-switch/krkrsdl2.nro\n"
+          "run" : "cp -t . ${{ github.event.repository.name }}-*/*.zip\ncp -t . ${{ github.event.repository.name }}-*/*.tar.gz\ncp -t . ${{ github.event.repository.name }}-android/krkrsdl2.apk\ncp -t . ${{ github.event.repository.name }}-switch/krkrsdl2.nro\n"
         },
         {
           "name" : "Create prerelease",
@@ -507,7 +495,7 @@
             "prerelease" : "true",
             "automatic_release_tag" : "latest",
             "title" : "Latest development builds",
-            "files" : "*.zip\n*.tar.gz\n*.apk\n*.vpk\n*.nro\n"
+            "files" : "*.zip\n*.tar.gz\n*.apk\n*.nro\n"
           }
         }
       ]
