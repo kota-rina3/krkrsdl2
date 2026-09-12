@@ -407,10 +407,7 @@ tTVPSDL2VideoOverlay::tTVPSDL2VideoOverlay(NativeEventQueueImplement *queue,
 		AVStream *st = FmtCtx->streams[VideoStreamIndex];
 		VCodecCtx = avcodec_alloc_context3(vcodec);
 		avcodec_parameters_to_context(VCodecCtx, st->codecpar);
-		VCodecCtx->thread_count = 1;	// single-threaded decode: avoids the
-										// ffmpeg frame-thread pool which has
-										// crashed here (heap corruption seen
-										// in std::thread::join afterwards)
+		VCodecCtx->thread_count = 0;	// auto
 		int verr = avcodec_open2(VCodecCtx, vcodec, NULL);
 		if(verr < 0)
 		{
@@ -666,21 +663,23 @@ void tTVPSDL2VideoOverlay::AudioCallbackTrampoline(void *userdata, Uint8 *stream
 void tTVPSDL2VideoOverlay::AudioCallback(Uint8 *stream, int len)
 {
 	std::lock_guard<std::mutex> lk(StateMutex);
-	const size_t ringsize = AudioRing.size();
-	if(ringsize == 0)
+	size_t todo = (size_t)len;
+	if(AudioRingUsed < todo)
 	{
-		SDL_memset(stream, 0, len);
+		if(AudioRingUsed > 0)
+		{
+			for(size_t i = 0; i < AudioRingUsed; i++)
+				stream[i] = AudioRing[AudioRingRead + i];
+			AudioRingRead = (AudioRingRead + AudioRingUsed) % AudioRing.size();
+			AudioRingUsed = 0;
+		}
+		SDL_memset(stream + AudioRingUsed, 0, len - (int)AudioRingUsed);
 		return;
 	}
-	size_t todo = (size_t)len;
-	size_t avail = AudioRingUsed;
-	if(avail > todo) avail = todo;
-	for(size_t i = 0; i < avail; i++)
-		stream[i] = AudioRing[(AudioRingRead + i) % ringsize];
-	AudioRingRead = (AudioRingRead + avail) % ringsize;
-	AudioRingUsed -= avail;
-	if(avail < todo)
-		SDL_memset(stream + avail, 0, todo - avail);
+	for(size_t i = 0; i < todo; i++)
+		stream[i] = AudioRing[AudioRingRead + i];
+	AudioRingRead = (AudioRingRead + todo) % AudioRing.size();
+	AudioRingUsed -= todo;
 }
 //---------------------------------------------------------------------------
 bool tTVPSDL2VideoOverlay::DecodeAudio()
@@ -688,14 +687,6 @@ bool tTVPSDL2VideoOverlay::DecodeAudio()
 	// decode one audio frame into the ring buffer; false when no more data now
 	if(!ACodecCtx || AudioStreamIndex < 0) return false;
 	if(SwrCtx == NULL) return false;
-
-	{
-		// backpressure: skip decoding when the ring is nearly full,
-		// otherwise AudioRingUsed could exceed the ring capacity
-		std::lock_guard<std::mutex> lk(StateMutex);
-		const size_t ringsize = AudioRing.size();
-		if(ringsize == 0 || AudioRingUsed + 65536 > ringsize) return false;
-	}
 
 	std::deque<AVPacket*> local;
 	{
