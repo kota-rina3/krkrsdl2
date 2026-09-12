@@ -1,4 +1,4 @@
-name: krkrsdl2-x64
+name: krkrsdl2-arm64
 
 on:
   workflow_dispatch:
@@ -7,8 +7,8 @@ on:
 jobs:
   build:
     name: 编译构建
-    runs-on: ubuntu-latest
-    container: linuxdeepin/deepin:crimson-amd64-v1.6.0
+    runs-on: ubuntu-latest-arm64
+    container: linuxdeepin/deepin:crimson-arm64-v1.6.0
 
     steps:
     - name: 检查代码
@@ -42,5 +42,5 @@ jobs:
     - name: 上传构建产物
       uses: actions/upload-artifact@v4
       with:
-        name: krkrsdl2-x64
+        name: krkrsdl2-arm64
         path: ./dist

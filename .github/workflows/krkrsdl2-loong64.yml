@@ -1,0 +1,52 @@
+name: krkrsdl2-loong64
+
+on:
+  workflow_dispatch:
+    branch: main
+
+jobs:
+  build:
+    name: 编译构建 (loong64)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 检查代码
+      uses: actions/checkout@v4
+
+    - name: 设置 QEMU（loong64 模拟）
+      uses: docker/setup-qemu-action@v4
+
+    - name: 在 deepin-loong64 容器中编译
+      run: |
+        docker run --platform linux/loong64 \
+          -v "${{ github.workspace }}:/workspace" \
+          -w /workspace \
+          linuxdeepin/deepin:crimson-loong64-v1.6.0 \
+          bash -c '
+            set -e
+
+            apt update && apt upgrade -y
+            apt install -y \
+              build-essential cmake libasound2-dev libfreetype6-dev libjpeg-dev libpng-dev libvorbis-dev libx11-dev \
+              libsdl2-dev libsdl2-*-dev unzip libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev \
+              libjack-jackd2-dev libpipewire-0.3-dev libusb-1.0-0-dev ninja-build pkg-config
+
+            unzip external/FAudio.zip -d external
+            unzip external/SDL.zip -d external
+            unzip external/krkrz.zip -d external
+            unzip external/meson_toolchains.zip -d external
+            unzip external/simde.zip -d external
+            unzip external/zlib.zip -d external
+
+            cmake -S . -B build
+            cmake --build build
+            mkdir ./dist
+            cp ./build/krkrsdl2 ./dist
+            
+          '
+
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: krkrsdl2-loong64
+        path: ./dist
