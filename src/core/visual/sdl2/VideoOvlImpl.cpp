@@ -568,10 +568,12 @@ void tTJSNI_VideoOverlay::SetVisible(bool b)
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::ResetOverlayParams()
 {
-#if TVP_VIDEO_OVERLAY_ANY
+#if TVP_VIDEO_OVERLAY_DSHOW
 	// retrieve new window information from owner window and
 	// set video owner window / message drain window.
 	// also sets rectangle and visible state.
+	// (win32-only: native overlay windows do not exist on the SDL2 backend,
+	//  which always renders through the vomLayer buffers)
 	if(VideoOverlay && Window && (Mode == vomOverlay || Mode == vomMixer || Mode == vomMFEVR) )
 	{
 		OwnerWindow = Window->GetWindowHandle();
@@ -1074,6 +1076,7 @@ void tTJSNI_VideoOverlay::SetMixingLayer( tTJSNI_BaseLayer *l )
 				dest.right = dest.left + l->GetImageWidth();
 				dest.bottom = dest.top + l->GetImageHeight();
 
+#if TVP_VIDEO_OVERLAY_DSHOW
 				// tTVPBaseBitmap->tTVPBitmap
 				tTVPBitmap *bmp = l->GetMainImage()->GetBitmap();
 				if( bmp )
@@ -1091,6 +1094,11 @@ void tTJSNI_VideoOverlay::SetMixingLayer( tTJSNI_BaseLayer *l )
 					DeleteObject( myDIB );
 					DeleteDC( hdc );
 				}
+#elif TVP_VIDEO_OVERLAY_SDL2
+				// the SDL2 backend has no GDI; pass the destination rectangle
+				// with a NULL DC (the backend mixes nothing for now)
+				VideoOverlay->SetMixingBitmap( NULL, &dest, alpha );
+#endif
 			}
 			else
 			{

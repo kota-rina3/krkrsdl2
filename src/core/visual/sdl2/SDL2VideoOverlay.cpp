@@ -160,10 +160,10 @@ public:
 	virtual void __stdcall Play() override;
 	virtual void __stdcall Stop() override;
 	virtual void __stdcall Pause() override;
-	virtual void __stdcall SetPosition(unsigned long long tick) override
+	virtual void __stdcall SetPosition(tjs_uint64 tick) override
 		{ SeekToMs((double)tick); }
-	virtual void __stdcall GetPosition(unsigned long long *tick) override
-		{ if(tick) *tick = (unsigned long long)GetClockMs(); }
+	virtual void __stdcall GetPosition(tjs_uint64 *tick) override
+		{ if(tick) *tick = (tjs_uint64)GetClockMs(); }
 	virtual void __stdcall GetStatus(tTVPVideoStatus *status) override
 		{ if(status) *status = (tTVPVideoStatus)Status.load(); }
 	virtual void __stdcall GetEvent(long *evcode, LONG_PTR *param1, LONG_PTR *param2, bool *got) override;
@@ -180,7 +180,7 @@ public:
 		{ if(f) *f = Fps; }
 	virtual void __stdcall GetNumberOfFrame( int *f ) override
 		{ if(f) *f = NumFrames; }
-	virtual void __stdcall GetTotalTime( long long *t ) override
+	virtual void __stdcall GetTotalTime( tjs_int64 *t ) override
 		{ if(t) *t = TotalTimeMs; }
 
 	virtual void __stdcall GetVideoSize( long *width, long *height ) override

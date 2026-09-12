@@ -17,6 +17,7 @@
 #else
 //---------------------------------------------------------------------------
 #include <stdint.h>
+#include "tjsCommHead.h" // tjs_uint64 / tjs_int64 (matches call sites in VideoOvlImpl.cpp)
 //---------------------------------------------------------------------------
 #ifndef __stdcall
 #define __stdcall
@@ -55,8 +56,8 @@ public:
 	virtual void __stdcall Play() = 0;
 	virtual void __stdcall Stop() = 0;
 	virtual void __stdcall Pause() = 0;
-	virtual void __stdcall SetPosition(unsigned long long tick) = 0;
-	virtual void __stdcall GetPosition(unsigned long long *tick) = 0;
+	virtual void __stdcall SetPosition(tjs_uint64 tick) = 0;
+	virtual void __stdcall GetPosition(tjs_uint64 *tick) = 0;
 	virtual void __stdcall GetStatus(tTVPVideoStatus *status) = 0;
 	virtual void __stdcall GetEvent(long *evcode, LONG_PTR *param1,
 			LONG_PTR *param2, bool *got) = 0;
@@ -68,7 +69,7 @@ public:
 	virtual void __stdcall GetFrame( int *f ) = 0;
 	virtual void __stdcall GetFPS( double *f ) = 0;
 	virtual void __stdcall GetNumberOfFrame( int *f ) = 0;
-	virtual void __stdcall GetTotalTime( long long *t ) = 0;
+	virtual void __stdcall GetTotalTime( tjs_int64 *t ) = 0;
 
 	virtual void __stdcall GetVideoSize( long *width, long *height ) = 0;
 	virtual void __stdcall GetFrontBuffer( BYTE **buff ) = 0;
