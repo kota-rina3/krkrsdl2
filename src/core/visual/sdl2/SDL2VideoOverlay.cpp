@@ -473,11 +473,6 @@ void tTVPSDL2VideoOverlay::GetEvent(long *evcode, LONG_PTR *param1,
 	*got = true;
 }
 //---------------------------------------------------------------------------
-void tTVPSDL2VideoOverlay::FreeEventParams(long evcode, LONG_PTR param1, LONG_PTR param2)
-{
-	/* events carry no dynamically allocated params */
-}
-//---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
 // clock
