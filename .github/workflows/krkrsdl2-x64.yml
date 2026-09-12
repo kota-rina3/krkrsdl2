@@ -20,9 +20,9 @@ jobs:
         apt install -y \
           build-essential cmake libasound2-dev libfreetype6-dev libjpeg-dev libpng-dev libvorbis-dev libx11-dev \
           libsdl2-dev libsdl2-*-dev unzip libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev \
-          ninja-build pkg-config
+          libjack-jackd2-dev libpipewire-0.3-dev libesd0-dev libnas-dev libusb-1.0-0-dev ninja-build pkg-config
 
-    - name: 安装所需依赖
+    - name: 解压依赖
       run: |
         unzip external/FAudio.zip -d external
         unzip external/SDL.zip -d external
