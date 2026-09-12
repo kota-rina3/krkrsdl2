@@ -55,8 +55,8 @@ public:
 	virtual void __stdcall Play() = 0;
 	virtual void __stdcall Stop() = 0;
 	virtual void __stdcall Pause() = 0;
-	virtual void __stdcall SetPosition(unsigned __int64 tick) = 0;
-	virtual void __stdcall GetPosition(unsigned __int64 *tick) = 0;
+	virtual void __stdcall SetPosition(unsigned long long tick) = 0;
+	virtual void __stdcall GetPosition(unsigned long long *tick) = 0;
 	virtual void __stdcall GetStatus(tTVPVideoStatus *status) = 0;
 	virtual void __stdcall GetEvent(long *evcode, LONG_PTR *param1,
 			LONG_PTR *param2, bool *got) = 0;
@@ -68,7 +68,7 @@ public:
 	virtual void __stdcall GetFrame( int *f ) = 0;
 	virtual void __stdcall GetFPS( double *f ) = 0;
 	virtual void __stdcall GetNumberOfFrame( int *f ) = 0;
-	virtual void __stdcall GetTotalTime( __int64 *t ) = 0;
+	virtual void __stdcall GetTotalTime( long long *t ) = 0;
 
 	virtual void __stdcall GetVideoSize( long *width, long *height ) = 0;
 	virtual void __stdcall GetFrontBuffer( BYTE **buff ) = 0;
