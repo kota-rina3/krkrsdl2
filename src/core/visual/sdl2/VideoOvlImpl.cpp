@@ -276,7 +276,12 @@ void tTJSNI_VideoOverlay::Open(const ttstr &_name)
 
 	try
 	{
-		LocalTempStorageHolder = new tTVPLocalTempStorageHolder(name);
+		// tTVPLocalTempStorageHolder requires a NORMALIZED storage name
+		// ("file://..."); TJS may pass a plain relative name like
+		// "yosugacn.mp4", which the media manager would otherwise mistake
+		// for a media name ("Not supported media type"). Normalize first.
+		ttstr normalized = TVPNormalizeStorageName(name);
+		LocalTempStorageHolder = new tTVPLocalTempStorageHolder(normalized);
 		TVPGetSDL2VideoOverlayObject(&EventQueue,
 			LocalTempStorageHolder->GetLocalName(), &VideoOverlay);
 
