@@ -301,6 +301,55 @@ public:
 		{ /* not supported */ }
 };
 //---------------------------------------------------------------------------
+// narrow (UTF-8) conversion for local file paths.
+// ttstr::AsNarrowStdString() goes through TJS_wcstombs which converts to
+// Shift-JIS in this codebase and mangles non-SJIS paths; ffmpeg needs the
+// raw bytes of the local name, which on modern systems is UTF-8.
+// tjs_char is UTF-16 on Windows, UTF-32 (4-byte wchar_t) elsewhere.
+//---------------------------------------------------------------------------
+static std::string TVPUtf8FromTtstr(const ttstr &str)
+{
+	std::string out;
+	const tjs_char *p = str.c_str();
+	if(!p) return out;
+	while(*p)
+	{
+		tjs_uint32 cp;
+#if defined(_WIN32)
+		cp = *p;
+		if(cp >= 0xD800 && cp <= 0xDBFF && p[1] >= 0xDC00 && p[1] <= 0xDFFF)
+		{
+			cp = 0x10000 + ((cp - 0xD800) << 10) + (p[1] - 0xDC00);
+			p++;
+		}
+#else
+		cp = (tjs_uint32)*p;
+		if(cp >= 0xD800 && cp < 0xE000) { p++; continue; } // stray surrogate
+#endif
+		p++;
+		if(cp < 0x80) out += (char)cp;
+		else if(cp < 0x800)
+		{
+			out += (char)(0xC0 | (cp >> 6));
+			out += (char)(0x80 | (cp & 0x3F));
+		}
+		else if(cp < 0x10000)
+		{
+			out += (char)(0xE0 | (cp >> 12));
+			out += (char)(0x80 | ((cp >> 6) & 0x3F));
+			out += (char)(0x80 | (cp & 0x3F));
+		}
+		else
+		{
+			out += (char)(0xF0 | (cp >> 18));
+			out += (char)(0x80 | ((cp >> 12) & 0x3F));
+			out += (char)(0x80 | ((cp >> 6) & 0x3F));
+			out += (char)(0x80 | (cp & 0x3F));
+		}
+	}
+	return out;
+}
+//---------------------------------------------------------------------------
 // factory
 //---------------------------------------------------------------------------
 void TVPGetSDL2VideoOverlayObject(NativeEventQueueImplement *queue,
@@ -331,7 +380,7 @@ tTVPSDL2VideoOverlay::tTVPSDL2VideoOverlay(NativeEventQueueImplement *queue,
 	AudioEndOfStream(false), Balance(0),
 	Window(NULL), DrainWindow(NULL), Visible(false)
 {
-	std::string name = localname.AsNarrowStdString();
+	std::string name = TVPUtf8FromTtstr(localname);
 	int err = avformat_open_input(&FmtCtx, name.c_str(), NULL, NULL);
 	if(err < 0)
 	{
@@ -341,7 +390,8 @@ tTVPSDL2VideoOverlay::tTVPSDL2VideoOverlay(NativeEventQueueImplement *queue,
 			ttstr(name.c_str()) + TJS_W(" (") + ttstr(errbuf) + TJS_W(")"));
 	}
 	if(avformat_find_stream_info(FmtCtx, NULL) < 0)
-		TVPThrowExceptionMessage(TJS_W("cannot find stream information in movie"));
+		TVPThrowExceptionMessage(TJS_W("cannot find stream information in movie (%1)"),
+			ttstr(name.c_str()));
 
 	// ---- find streams
 	const AVCodec *vcodec = NULL, *acodec = NULL;
@@ -358,8 +408,13 @@ tTVPSDL2VideoOverlay::tTVPSDL2VideoOverlay(NativeEventQueueImplement *queue,
 		VCodecCtx = avcodec_alloc_context3(vcodec);
 		avcodec_parameters_to_context(VCodecCtx, st->codecpar);
 		VCodecCtx->thread_count = 0;	// auto
-		if(avcodec_open2(VCodecCtx, vcodec, NULL) < 0)
-			TVPThrowExceptionMessage(TJS_W("cannot open video codec"));
+		int verr = avcodec_open2(VCodecCtx, vcodec, NULL);
+		if(verr < 0)
+		{
+			char errbuf[256];
+			av_strerror(verr, errbuf, sizeof(errbuf));
+			TVPThrowExceptionMessage(TJS_W("cannot open video codec: %1"), ttstr(errbuf));
+		}
 
 		Width = VCodecCtx->width;
 		Height = VCodecCtx->height;
