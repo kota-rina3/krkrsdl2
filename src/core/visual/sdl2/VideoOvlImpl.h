@@ -22,6 +22,12 @@
 
 #include "NativeEventQueue.h"
 
+#if defined(KRKRSDL2_ENABLE_VIDEOOVERLAY) && !defined(_WIN32)
+// provides BYTE/HWND/RECT/LONG_PTR shims and iTVPVideoOverlay for the
+// SDL2/ffmpeg backend (the win32 build gets them from windows headers)
+#include "VideoOverlayCompat.h"
+#endif
+
 //---------------------------------------------------------------------------
 // tTJSNI_VideoOverlay : VideoOverlay Native Instance
 //---------------------------------------------------------------------------
@@ -35,7 +41,7 @@ class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay
 	tTVPRect Rect;
 	bool Visible;
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(KRKRSDL2_ENABLE_VIDEOOVERLAY)
 	HWND OwnerWindow;
 #endif
 
@@ -48,7 +54,7 @@ class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay
 	tTVPVideoOverlayMode	Mode;	//!< Modeの動的な変更は出来ない。open前にセットしておくこと
 	bool	Loop;
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(KRKRSDL2_ENABLE_VIDEOOVERLAY)
 	class tTVPBaseBitmap	*Bitmap[2];	//!< Layer描画用バッファ用Bitmap
 	BYTE			*BmpBits[2];
 #endif
