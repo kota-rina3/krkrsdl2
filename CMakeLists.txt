@@ -32,6 +32,7 @@ cmake_policy(SET CMP0077 NEW)
 endif()
 option(OPTION_ENABLE_ASYNC_IMAGE_LOAD "Enable async image load. Not applicable to Emscripten build." ON)
 option(OPTION_ENABLE_CANVAS "Enable Canvas interface. Requires OpenGL ES or ANGLE at runtime." OFF)
+option(KRKRSDL2_ENABLE_VIDEOOVERLAY "Enable the built-in video overlay backend (SDL2/ffmpeg). Requires ffmpeg development packages via pkg-config." ON)
 option(OPTION_ENABLE_CASEINSENSITIVITY "Enable case insensitivity. May malfunction if directories in the path are not listable." ON)
 option(OPTION_ENABLE_SDL_THREADS "Enable SDL threads. May be more useful on platforms that do not have a good implementation of std::thread." OFF)
 option(OPTION_ENABLE_EXTERNAL_PLUGINS "Enable external plugins. This will make Plugins.link load a plugin instead of a no-op." ON)
@@ -168,6 +169,7 @@ endif()
 list(APPEND KRKRSDL2_DEFINITIONS
 	TVP_COMPILING_KRKRSDL2
 	TVP_OPUS_DECODER_IMPLEMENT
+	TVP_VORBIS_DECODER_IMPLEMENT
 	TVP_LOG_TO_COMMANDLINE_CONSOLE
 	HAVE_CONFIG_H
 	FT2_BUILD_LIBRARY
@@ -394,6 +396,31 @@ list(APPEND KRKRSDL2COMMON_INCLUDES
 	external/krkrz/movie/win32
 	external/krkrz/external/baseclasses
 )
+endif()
+
+# ---- built-in SDL2/ffmpeg video overlay backend ----
+if(KRKRSDL2_ENABLE_VIDEOOVERLAY)
+if(NOT (WIN32 AND KRKRSDL2_USE_WIN32_EVENT_QUEUE))
+	# classic win32 event queue builds use the DirectShow/MF backend above;
+	# everyone else gets the SDL2/ffmpeg backend
+	list(APPEND KRKRSDL2_DEFINITIONS
+		KRKRSDL2_ENABLE_VIDEOOVERLAY
+	)
+	list(APPEND KRKRSDL2COMMON_SRC
+		src/core/visual/sdl2/SDL2VideoOverlay.cpp
+	)
+	find_package(PkgConfig REQUIRED)
+	pkg_check_modules(KRKRSDL2_FFMPEG REQUIRED IMPORTED_TARGET
+		libavformat
+		libavcodec
+		libswscale
+		libswresample
+		libavutil
+	)
+	list(APPEND KRKRSDL2_LIBS
+		PkgConfig::KRKRSDL2_FFMPEG
+	)
+endif()
 endif()
 
 list(APPEND KRKRSDL2_CXXFLAGS ${KRKRSDL2_CFLAGS})
