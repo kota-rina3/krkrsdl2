@@ -22,10 +22,18 @@ jobs:
           libsdl2-dev libsdl2-*-dev unzip libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev \
           ninja-build pkg-config
 
+    - name: 安装所需依赖
+      run: |
+        unzip external/FAudio.zip -d external
+        unzip external/SDL.zip -d external
+        unzip external/krkrz.zip -d external
+        unzip external/meson_toolchains.zip -d external
+        unzip external/simde.zip -d external
+        unzip external/zlib.zip -d external
+
     - name: 编译
       continue-on-error: false
       run: |
-        unzip external/*.zip -d external
         cmake -S . -B build
         cmake --build build
 
