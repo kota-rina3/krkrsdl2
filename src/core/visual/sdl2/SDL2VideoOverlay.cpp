@@ -407,7 +407,10 @@ tTVPSDL2VideoOverlay::tTVPSDL2VideoOverlay(NativeEventQueueImplement *queue,
 		AVStream *st = FmtCtx->streams[VideoStreamIndex];
 		VCodecCtx = avcodec_alloc_context3(vcodec);
 		avcodec_parameters_to_context(VCodecCtx, st->codecpar);
-		VCodecCtx->thread_count = 0;	// auto
+		VCodecCtx->thread_count = 1;	// single-threaded decode: avoids the
+										// ffmpeg frame-thread pool which has
+										// crashed here (heap corruption seen
+										// in std::thread::join afterwards)
 		int verr = avcodec_open2(VCodecCtx, vcodec, NULL);
 		if(verr < 0)
 		{
