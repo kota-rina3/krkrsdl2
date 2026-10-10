@@ -145,6 +145,13 @@ set(KRKRSDL2_INCLUDES "")
 set(KRKRSDL2COMMON_SRC "")
 set(KRKRSDL2COMMON_INCLUDES "")
 
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+	${CMAKE_CURRENT_SOURCE_DIR}/src/config/src_list/kirikirisdl2/sources.txt
+	${CMAKE_CURRENT_SOURCE_DIR}/src/config/src_list/kirikirisdl2/sources_sse2.txt
+	${CMAKE_CURRENT_SOURCE_DIR}/src/config/src_list/kirikirisdl2/sources_avx2.txt
+	${CMAKE_CURRENT_SOURCE_DIR}/src/config/src_list/kirikirisdl2/includes.txt
+)
+
 file(STRINGS src/config/src_list/kirikirisdl2/sources.txt KIRIKIRISDL2_SRC)
 file(STRINGS src/config/src_list/kirikirisdl2/sources_sse2.txt KIRIKIRISDL2_SSE2_SRC)
 file(STRINGS src/config/src_list/kirikirisdl2/sources_avx2.txt KIRIKIRISDL2_AVX2_SRC)
@@ -273,6 +280,23 @@ list(APPEND KRKRSDL2_CFLAGS
 list(APPEND KRKRSDL2_LIBS
 	pthread
 )
+
+# Software movie playback. Linux has no native video overlay, so
+# src/core/visual/sdl2/LinuxVideoPlayer.cpp decodes with FFmpeg and the SDL
+# render loop presents the frames; the other platforms keep using their native
+# players (DirectShow / AVPlayer / MediaPlayer) and never touch these libs.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+	libavformat
+	libavcodec
+	libswscale
+	libswresample
+	libavutil
+)
+list(APPEND KRKRSDL2_LIBS
+	PkgConfig::FFMPEG
+)
+
 endif()
 
 if(KRKRSDL2_BUILD_ENABLE_WARNINGS)
@@ -406,11 +430,9 @@ if(NOT (WIN32 AND KRKRSDL2_USE_WIN32_EVENT_QUEUE))
 	list(APPEND KRKRSDL2_DEFINITIONS
 		KRKRSDL2_ENABLE_VIDEOOVERLAY
 	)
-	list(APPEND KRKRSDL2COMMON_SRC
-		src/core/visual/sdl2/SDL2VideoOverlay.cpp
-	)
+
 	find_package(PkgConfig REQUIRED)
-	pkg_check_modules(KRKRSDL2_FFMPEG REQUIRED IMPORTED_TARGET
+		pkg_check_modules(KRKRSDL2_FFMPEG REQUIRED IMPORTED_TARGET
 		libavformat
 		libavcodec
 		libswscale
@@ -420,6 +442,14 @@ if(NOT (WIN32 AND KRKRSDL2_USE_WIN32_EVENT_QUEUE))
 	list(APPEND KRKRSDL2_LIBS
 		PkgConfig::KRKRSDL2_FFMPEG
 	)
+endif()
+if(APPLE)
+list(APPEND KRKRSDL2_LIBS
+	"-framework AVFoundation"
+	"-framework AudioToolbox"
+	"-framework CoreMedia"
+	"-framework QuartzCore"
+)
 endif()
 endif()
 
