@@ -20,6 +20,22 @@
 #include "LayerBitmapIntf.h"
 #include "SysInitIntf.h"
 #include "StorageImpl.h"
+
+/* Which video overlay backend this translation unit provides.
+ *   DSHOW : DirectShow / Media Foundation, Windows only (krkmovie).
+ *   SDL2  : the macOS AVPlayer bridge; that bridge is not part of this tree,
+ *           so it stays off everywhere and macOS falls back to the no-op path.
+ *   Linux : the built-in FFmpeg software player below (KRKRSDL2_LINUX_VIDEO_PLAYER).
+ * The macros must be defined before their first use, which is the include
+ * guards in this block. */
+#if defined(_WIN32)
+# define TVP_VIDEO_OVERLAY_DSHOW 1
+#else
+# define TVP_VIDEO_OVERLAY_DSHOW 0
+#endif
+#define TVP_VIDEO_OVERLAY_SDL2 0
+#define TVP_VIDEO_OVERLAY_ANY (TVP_VIDEO_OVERLAY_DSHOW || TVP_VIDEO_OVERLAY_SDL2)
+
 #if TVP_VIDEO_OVERLAY_ANY
 #include "krmovie.h"
 #endif
@@ -33,9 +49,8 @@
 #if TVP_VIDEO_OVERLAY_ANY
 #include "TVPVideoOverlay.h"
 #endif
-#if defined(KRKRSDL2_ENABLE_VIDEOOVERLAY) && !defined(KRKRSDL2_USE_WIN32_EVENT_QUEUE)
-#include "VideoOverlayCompat.h"
-#include "SDL2VideoOverlay.h"
+#ifdef KRKRSDL2_LINUX_VIDEO_PLAYER
+#include "LinuxVideoPlayer.h"
 #endif
 #if !defined(_WIN32) || !defined(KRKRSDL2_USE_WIN32_EVENT_QUEUE)
 #define TVPDSAttenuateToPan(x) x
@@ -43,26 +58,13 @@
 #endif
 
 //---------------------------------------------------------------------------
-// video overlay backend selection:
-//   TVP_VIDEO_OVERLAY_DSHOW : classic win32 event queue + DirectShow/MF path
-//   TVP_VIDEO_OVERLAY_SDL2  : SDL2 event loop + built-in ffmpeg backend
-//---------------------------------------------------------------------------
-#if defined(KRKRSDL2_ENABLE_VIDEOOVERLAY)
-# if defined(_WIN32) && defined(KRKRSDL2_USE_WIN32_EVENT_QUEUE)
-#  define TVP_VIDEO_OVERLAY_DSHOW 1
-#  define TVP_VIDEO_OVERLAY_SDL2 0
-# else
-#  define TVP_VIDEO_OVERLAY_DSHOW 0
-#  define TVP_VIDEO_OVERLAY_SDL2 1
-# endif
-#else
-# define TVP_VIDEO_OVERLAY_DSHOW 0
-# define TVP_VIDEO_OVERLAY_SDL2 0
-#endif
-#define TVP_VIDEO_OVERLAY_ANY (TVP_VIDEO_OVERLAY_DSHOW || TVP_VIDEO_OVERLAY_SDL2)
-
-//---------------------------------------------------------------------------
 static std::vector<tTJSNI_VideoOverlay *> TVPVideoOverlayVector;
+#if defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+/* The overlay whose movie is currently playing. The SDL render loop looks the
+ * frames up through this pointer (see the TVPLinuxVideo* bridge below). */
+static tTJSNI_VideoOverlay *LinuxVideoActiveOverlay = nullptr;
+#endif
+
 //---------------------------------------------------------------------------
 static void TVPAddVideOverlay(tTJSNI_VideoOverlay *ovl)
 {
@@ -101,6 +103,10 @@ tTJSNI_VideoOverlay::tTJSNI_VideoOverlay()
 {
 #if TVP_VIDEO_OVERLAY_ANY
 	VideoOverlay = NULL;
+#endif
+#ifdef KRKRSDL2_LINUX_VIDEO_PLAYER
+	LinuxPlayer = nullptr;
+	LinuxFinishedReported = false;
 #endif
 	Rect.left = 0;
 	Rect.top = 0;
@@ -261,61 +267,69 @@ void tTJSNI_VideoOverlay::Open(const ttstr &_name)
 	// check window
 	if(!Window) TVPThrowExceptionMessage(TVPWindowAlreadyMissing);
 
-	// split off the "?parameter" part
-	ttstr name(_name);
-	const tjs_char * param_pos = TJS_strchr(name.c_str(), TJS_W('?'));
-	if(param_pos != NULL)
+	ttstr placedName = TVPGetPlacedPath(_name);
+	if(placedName.IsEmpty())
+		TVPThrowExceptionMessage(TVPErrorInKrMovieDLL, _name);
+	LocalTempStorageHolder = new tTVPLocalTempStorageHolder(placedName);
+	std::string filename;
+	if(!TVPUtf16ToUtf8(filename,
+		LocalTempStorageHolder->GetLocalName().AsStdString()))
 	{
-		int param_pos_ind = (int)(param_pos - name.c_str());
-		name = ttstr(name, param_pos_ind);
+		Close();
+		TVPThrowExceptionMessage(TVPErrorInKrMovieDLL, _name);
 	}
+	MacVideoOverlay = TVPMacVideoCreate(filename.c_str(),
+		Window->GetNativeWindowHandle(), this,
+		[](void *context) {
+			static_cast<tTJSNI_VideoOverlay *>(context)->MacPlaybackFinished();
+		});
+	if(!MacVideoOverlay)
+	{
+		Close();
+		TVPThrowExceptionMessage(TVPErrorInKrMovieDLL, _name);
+	}
+	TVPMacVideoSetScreenGeometry(MacVideoOverlay,
+		Window->GetWidth(), Window->GetHeight());
+	SetRectangleToVideoOverlay();
+	TVPMacVideoSetVisible(MacVideoOverlay, Visible ? 1 : 0);
+	SetStatus(tTVPVideoOverlayStatus::Stop);
+#elif defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+	/* Linux: software FFmpeg playback. The frame lands in the player's own
+	 * buffer and the SDL render loop draws it as a full-window texture (see
+	 * the TVPLinuxVideo* bridge and TickBeat in SDLApplication.cpp). */
+	Close();
 
-	// resolve to a local file path (extracts from archives when needed)
+	if(!Window) TVPThrowExceptionMessage(TVPWindowAlreadyMissing);
+
+	ttstr placedName = TVPGetPlacedPath(_name);
+	if(placedName.IsEmpty())
+		TVPThrowExceptionMessage(TVPErrorInKrMovieDLL, _name);
+
+	/* The movie may live inside an xp3 archive; the temp holder extracts it to
+	 * the file system when that is the case. */
 	if(LocalTempStorageHolder)
 		delete LocalTempStorageHolder, LocalTempStorageHolder = NULL;
+	LocalTempStorageHolder = new tTVPLocalTempStorageHolder(placedName);
 
-	try
+	std::string filename;
+	if(!TVPUtf16ToUtf8(filename,
+		LocalTempStorageHolder->GetLocalName().AsStdString()))
 	{
-		// tTVPLocalTempStorageHolder requires a NORMALIZED storage name
-		// ("file://..."); TJS may pass a plain relative name like
-		// "yosugacn.mp4", which the media manager would otherwise mistake
-		// for a media name ("Not supported media type"). Normalize first.
-		ttstr normalized = TVPNormalizeStorageName(name);
-		LocalTempStorageHolder = new tTVPLocalTempStorageHolder(normalized);
-		TVPGetSDL2VideoOverlayObject(&EventQueue,
-			LocalTempStorageHolder->GetLocalName(), &VideoOverlay);
-
-		// set up the vomLayer double buffers (always: video size is needed
-		// for presentation, and audio-only files simply never draw)
-		long width, height;
-		VideoOverlay->GetVideoSize( &width, &height );
-
-		if( width > 0 && height > 0 )
-		{
-			long size = width * height * 4;
-			if( Bitmap[0] != NULL )
-				delete Bitmap[0];
-			if( Bitmap[1] != NULL )
-				delete Bitmap[1];
-			Bitmap[0] = new tTVPBaseBitmap( width, height, 32 );
-			Bitmap[1] = new tTVPBaseBitmap( width, height, 32 );
-
-			BmpBits[0] = static_cast<BYTE*>(Bitmap[0]->GetBitmap()->GetScanLine( Bitmap[0]->GetBitmap()->GetHeight()-1 ));
-			BmpBits[1] = static_cast<BYTE*>(Bitmap[1]->GetBitmap()->GetScanLine( Bitmap[1]->GetBitmap()->GetHeight()-1 ));
-
-			VideoOverlay->SetVideoBuffer( BmpBits[0], BmpBits[1], size );
-		}
-	}
-	catch(...)
-	{
-		if(LocalTempStorageHolder)
-			delete LocalTempStorageHolder, LocalTempStorageHolder = NULL;
 		Close();
-		throw;
+		TVPThrowExceptionMessage(TVPErrorInKrMovieDLL, _name);
 	}
 
-	// set Status
-	ClearWndProcMessages();
+	if(!LinuxPlayer)
+		LinuxPlayer = new TVPLinuxVideoPlayer();
+
+	if(!LinuxPlayer->Open(filename.c_str()))
+	{
+		delete LinuxPlayer, LinuxPlayer = nullptr;
+		Close();
+		TVPThrowExceptionMessage(TVPErrorInKrMovieDLL, _name);
+	}
+	LinuxFinishedReported = false;
+	LinuxVideoActiveOverlay = this;
 	SetStatus(tTVPVideoOverlayStatus::Stop);
 #endif
 }
@@ -344,6 +358,17 @@ void tTJSNI_VideoOverlay::Close()
 
 	Bitmap[0] = Bitmap[1] = NULL;
 	BmpBits[0] = BmpBits[1] = NULL;
+#elif defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+	if(LinuxVideoActiveOverlay == this) LinuxVideoActiveOverlay = nullptr;
+	if(LinuxPlayer)
+	{
+		LinuxPlayer->Close();
+		delete LinuxPlayer, LinuxPlayer = nullptr;
+	}
+	if(LocalTempStorageHolder)
+		delete LocalTempStorageHolder, LocalTempStorageHolder = NULL;
+	LinuxFinishedReported = false;
+	SetStatus(tTVPVideoOverlayStatus::Unload);
 #endif
 }
 //---------------------------------------------------------------------------
@@ -365,6 +390,17 @@ void tTJSNI_VideoOverlay::Shutdown()
 		throw;
 	}
 	CanDeliverEvents = c;
+#elif defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+	if(LinuxVideoActiveOverlay == this) LinuxVideoActiveOverlay = nullptr;
+	if(LinuxPlayer)
+	{
+		LinuxPlayer->Stop();
+		LinuxPlayer->Close();
+		delete LinuxPlayer, LinuxPlayer = nullptr;
+	}
+	if(LocalTempStorageHolder)
+		delete LocalTempStorageHolder, LocalTempStorageHolder = NULL;
+	SetStatus(tTVPVideoOverlayStatus::Unload);
 #endif
 }
 //---------------------------------------------------------------------------
@@ -386,6 +422,12 @@ void tTJSNI_VideoOverlay::Play()
 		ClearWndProcMessages();
 		if( Mode != vomMFEVR ) SetStatus(tTVPVideoOverlayStatus::Play);
 	}
+#elif defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+	if(LinuxPlayer)
+	{
+		LinuxPlayer->Play();
+		SetStatus(tTVPVideoOverlayStatus::Play);
+	}
 #endif
 }
 //---------------------------------------------------------------------------
@@ -399,6 +441,12 @@ void tTJSNI_VideoOverlay::Stop()
 		ClearWndProcMessages();
 		if( Mode != vomMFEVR ) SetStatus(tTVPVideoOverlayStatus::Stop);
 	}
+#elif defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+	if(LinuxPlayer)
+	{
+		LinuxPlayer->Stop();
+		SetStatus(tTVPVideoOverlayStatus::Stop);
+	}
 #endif
 }
 //---------------------------------------------------------------------------
@@ -411,6 +459,12 @@ void tTJSNI_VideoOverlay::Pause()
 		VideoOverlay->Pause();
 //		ClearWndProcMessages();
 		if( Mode != vomMFEVR ) SetStatus(tTVPVideoOverlayStatus::Pause);
+	}
+#elif defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+	if(LinuxPlayer)
+	{
+		LinuxPlayer->Pause();
+		SetStatus(tTVPVideoOverlayStatus::Pause);
 	}
 #endif
 }
@@ -426,6 +480,8 @@ void tTJSNI_VideoOverlay::Rewind()
 		if( EventFrame >= 0 && IsEventPast )
 			IsEventPast = false;
 	}
+#elif defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+	if(LinuxPlayer) LinuxPlayer->Rewind();
 #endif
 }
 void tTJSNI_VideoOverlay::Prepare()
@@ -981,6 +1037,9 @@ tjs_int tTJSNI_VideoOverlay::GetAudioVolume()
 	{
 		VideoOverlay->GetAudioVolume( &result );
 	}
+#elif defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+	if(LinuxPlayer)
+		return (tjs_int)(LinuxPlayer->Volume() * 100000.0f);
 #endif
 	return TVPDSAttenuateToVolume( result );
 }
@@ -990,6 +1049,13 @@ void tTJSNI_VideoOverlay::SetAudioVolume(tjs_int b)
 	if(VideoOverlay)
 	{
 		VideoOverlay->SetAudioVolume( TVPVolumeToDSAttenuate( b ) );
+	}
+#elif defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+	if(LinuxPlayer)
+	{
+		if(b < 0) b = 0;
+		if(b > 100000) b = 100000;
+		LinuxPlayer->SetVolume((float)b / 100000.0f);
 	}
 #endif
 }
@@ -1001,6 +1067,8 @@ tjs_uint tTJSNI_VideoOverlay::GetNumberOfAudioStream()
 	{
 		VideoOverlay->GetNumberOfAudioStream( &result );
 	}
+#elif defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+	if(LinuxPlayer && LinuxPlayer->HasAudio()) result = 1;
 #endif
 	return result;
 }
@@ -1504,4 +1572,71 @@ tTJSNativeClass * TVPCreateNativeClass_VideoOverlay()
 	return new tTJSNC_VideoOverlay();
 }
 //---------------------------------------------------------------------------
-
+#if defined(KRKRSDL2_LINUX_VIDEO_PLAYER)
+/* ---------------------------------------------------------------------------
+ * Software video playback bridge
+ *
+ * tTJSNI_VideoOverlay owns the FFmpeg player (created in Open()); the SDL
+ * render loop in SDLApplication.cpp asks for the newest decoded frame through
+ * these entry points and draws it as a window-sized texture. The completion
+ * notification has to run on the main thread because SetStatus() fires the
+ * onStatusChanged TJS event inline, so the render loop polls for the end of
+ * the movie once per frame instead of the decoder thread calling back.
+ * ------------------------------------------------------------------------- */
+bool tTJSNI_VideoOverlay::LinuxAcquireFrame(const uint8_t **pixels, int *pitch, int *width, int *height, bool *is_new)
+{
+	if(!LinuxPlayer) return false;
+	const uint8_t *data = nullptr;
+	int line_size = 0;
+	if(!LinuxPlayer->AcquireFrame(&data, &line_size, is_new)) return false;
+	*pixels = data;
+	*pitch = line_size;
+	*width = LinuxPlayer->Width();
+	*height = LinuxPlayer->Height();
+	return true;
+}
+//---------------------------------------------------------------------------
+void tTJSNI_VideoOverlay::LinuxReleaseFrame()
+{
+	if(LinuxPlayer) LinuxPlayer->ReleaseFrame();
+}
+//---------------------------------------------------------------------------
+bool tTJSNI_VideoOverlay::LinuxIsFinished() const
+{
+	return LinuxPlayer != nullptr && LinuxPlayer->IsFinished() && !LinuxFinishedReported;
+}
+//---------------------------------------------------------------------------
+void tTJSNI_VideoOverlay::LinuxPlaybackFinished()
+{
+	if(LinuxFinishedReported) return;
+	LinuxFinishedReported = true;
+	/* Same contract as the native players on the other platforms: the TJS
+	 * phase machine in Movie.tjs only leaves "running" when it sees this. */
+	SetStatus(tTVPVideoOverlayStatus::Stop);
+}
+//---------------------------------------------------------------------------
+bool TVPLinuxVideoIsActive()
+{
+	return LinuxVideoActiveOverlay != nullptr;
+}
+//---------------------------------------------------------------------------
+bool TVPLinuxVideoAcquireFrame(const uint8_t **pixels, int *pitch, int *width, int *height, bool *is_new)
+{
+	if(!LinuxVideoActiveOverlay) return false;
+	return LinuxVideoActiveOverlay->LinuxAcquireFrame(pixels, pitch, width, height, is_new);
+}
+//---------------------------------------------------------------------------
+void TVPLinuxVideoReleaseFrame()
+{
+	if(LinuxVideoActiveOverlay) LinuxVideoActiveOverlay->LinuxReleaseFrame();
+}
+//---------------------------------------------------------------------------
+bool TVPLinuxVideoConsumeFinished()
+{
+	if(!LinuxVideoActiveOverlay) return false;
+	if(!LinuxVideoActiveOverlay->LinuxIsFinished()) return false;
+	LinuxVideoActiveOverlay->LinuxPlaybackFinished();
+	return true;
+}
+#endif
+//---------------------------------------------------------------------------

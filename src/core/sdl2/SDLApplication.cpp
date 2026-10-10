@@ -2,6 +2,9 @@
 /* Copyright (c) Kirikiri SDL2 Developers */
 
 #include "tjsCommHead.h"
+#include <dlfcn.h>
+#include <cstdio>
+#include <chrono>
 #include "WindowImpl.h"
 #include "VirtualKey.h"
 #include "Application.h"
@@ -18,6 +21,9 @@
 #include "StorageIntf.h"
 #include "SDLBitmapCompletion.h"
 #include "ScriptMgnIntf.h"
+#if defined(__linux__)
+#include "LinuxVideoPlayer.h"
+#endif
 #include "SystemControl.h"
 #include "PluginImpl.h"
 #ifdef KRKRZ_ENABLE_CANVAS
@@ -35,6 +41,9 @@
 #ifndef _WIN32
 #include <unistd.h>
 #endif
+
+#include <math.h>
+#include <algorithm>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -521,6 +530,13 @@ protected:
 #ifdef KRKRZ_ENABLE_CANVAS
 	tTVPOpenGLScreen *openGlScreen;
 #endif
+#if defined(__linux__)
+	/* Texture the software-decoded movie frames are uploaded into; see the
+	 * TVPLinuxVideo* bridge in VideoOvlImpl.cpp. */
+	SDL_Texture *videoTexture = nullptr;
+	int videoTextureWidth = 0;
+	int videoTextureHeight = 0;
+#endif
 	int lastMouseX;
 	int lastMouseY;
 
@@ -698,6 +714,10 @@ public:
 	virtual tjs_int GetInnerWidth() override;
 	/* Called from tTJSNI_Window */
 	virtual tjs_int GetInnerHeight() override;
+	/* Called from tTJSNI_Window (video overlay geometry) */
+	virtual void ZoomRectangle(tjs_int &left, tjs_int &top,
+		tjs_int &right, tjs_int &bottom) override;
+	virtual void *GetNativeWindowHandle() const override;
 #ifdef _WIN32
 	virtual void RegisterWindowMessageReceiver(tTVPWMRRegMode mode, void *proc, const void *userdata) override;
 	bool InternalDeliverMessageToReceiver(tTVPWindowMessage &msg);
@@ -791,6 +811,25 @@ TVPWindowWindow::TVPWindowWindow(tTJSNI_Window *w)
 	{
 		TVPThrowExceptionMessage(TJS_W("Cannot create SDL window: %1"), ttstr(SDL_GetError()));
 	}
+	/* Which video backend actually got used? A window that SDL creates through
+	 * the dummy/offscreen driver renders perfectly into memory while nothing
+	 * ever appears on the X server the launcher is watching - exactly the
+	 * "engine draws, screenshot is black" pattern seen in CI. */
+	{
+		const char *video_driver = SDL_GetCurrentVideoDriver();
+		const char *display = SDL_getenv("DISPLAY");
+		SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "VIDWINDOW driver=%s display=%s flags=0x%x size=%dx%d title=%s",
+			video_driver ? video_driver : "(null)",
+			display ? display : "(unset)",
+			(unsigned)SDL_GetWindowFlags(this->window),
+			new_window_w, new_window_h,
+			SDL_GetWindowTitle(this->window) ? SDL_GetWindowTitle(this->window) : "(null)");
+		/* NOTE: SDL_GetWindowWMInfo cannot be used here - this SDL build ships
+		 * no syswm backend at all, so SDL_SysWMinfo / SDL_SYSWM_X11 are not
+		 * even declared (it failed to compile with "SDL_SysWMinfo was not
+		 * declared in this scope"). The video driver plus DISPLAY above are
+		 * enough to tell that the window is created on a real X server. */
+	}
 #if defined(__EMSCRIPTEN__) && defined(KRKRSDL2_WINDOW_SIZE_IS_LAYER_SIZE)
 	EmscriptenFullscreenStrategy strategy;
 	SDL_memset(&strategy, 0, sizeof(strategy));
@@ -835,15 +874,36 @@ TVPWindowWindow::TVPWindowWindow(tTJSNI_Window *w)
 #endif
 
 		this->bitmapCompletion = new TVPSDLBitmapCompletion();
-		if (!this->renderer)
+		/* The engine always paints into its own RGB surface. It is recreated by
+		 * SetPaintBoxSize whenever the layer size changes, but an initial one
+		 * is allocated here so the first frames have a target even if that
+		 * call has not happened yet - relying on SetPaintBoxSize alone left
+		 * the window permanently empty when it did not fire.
+		 * TickBeat then either uploads this surface into the renderer texture
+		 * (platforms with a renderer) or scales it into the window surface
+		 * (Linux, see the software blit there). Taking the window surface here
+		 * instead made SDL_UpdateTexture upload the untouched window
+		 * framebuffer - a black picture - and freeing it later left SDL's own
+		 * window->surface dangling. */
 		{
-			this->surface = SDL_GetWindowSurface(this->window);
+			int initial_w = 0;
+			int initial_h = 0;
+			SDL_GetWindowSize(this->window, &initial_w, &initial_h);
+			if (initial_w <= 0 || initial_h <= 0)
+			{
+				initial_w = 640;
+				initial_h = 480;
+			}
+			this->surface = SDL_CreateRGBSurface(0, initial_w, initial_h, 32,
+				0x00ff0000, 0x0000ff00, 0x000000ff, 0);
 			if (!this->surface)
 			{
-				TVPAddLog(ttstr("Cannot get surface from SDL window: ") + ttstr(SDL_GetError()));
+				TVPThrowExceptionMessage(TJS_W("Cannot create surface: %1"), ttstr(SDL_GetError()));
 			}
+			SDL_memset(this->surface->pixels, 0, (size_t)this->surface->h * (size_t)this->surface->pitch);
 			this->bitmapCompletion->surface = this->surface;
-		}
+			SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "VIDINIT surface=%p %dx%d renderer=%p",
+				(void *)this->surface, initial_w, initial_h, (void *)this->renderer);
 		if (!this->renderer && !this->surface)
 		{
 			TVPThrowExceptionMessage(TJS_W("Cannot get surface or renderer from SDL window"));
@@ -858,6 +918,7 @@ TVPWindowWindow::TVPWindowWindow(tTJSNI_Window *w)
 	::SetWindowLongPtr(this->GetHandle(), GWLP_USERDATA, (LONG_PTR)this);
 #endif
 	Application->AddWindow(this);
+}
 }
 
 TVPWindowWindow::~TVPWindowWindow()
@@ -897,6 +958,13 @@ TVPWindowWindow::~TVPWindowWindow()
 		SDL_FreeSurface(this->surface);
 		this->surface = nullptr;
 	}
+#if defined(__linux__)
+	if (this->videoTexture)
+	{
+		SDL_DestroyTexture(this->videoTexture);
+		this->videoTexture = nullptr;
+	}
+#endif
 	if (this->renderer)
 	{
 		SDL_DestroyRenderer(this->renderer);
@@ -955,6 +1023,16 @@ void TVPWindowWindow::SetPaintBoxSize(tjs_int w, tjs_int h)
 			TVPThrowExceptionMessage(TJS_W("Cannot create surface: %1"), ttstr(SDL_GetError()));
 		}
 		this->bitmapCompletion->surface = this->surface;
+		SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "VIDPAINTBOX %dx%d surface=%p renderer=%p",
+			w, h, (void *)this->surface, (void *)this->renderer);
+		/* SDL_CreateRGBSurface leaves the pixel memory uninitialised. Until
+		 * the game script paints its first frame the TickBeat render path
+		 * presents whatever garbage sits in the buffer, so clear it. */
+		SDL_memset(this->surface->pixels, 0, (size_t)this->surface->h * (size_t)this->surface->pitch);
+		if (this->texture)
+		{
+			SDL_UpdateTexture(this->texture, NULL, this->surface->pixels, this->surface->pitch);
+		}
 	}
 #ifndef KRKRSDL2_ENABLE_ZOOM
 	SDL_Rect cliprect;
@@ -993,6 +1071,35 @@ static int MulDiv(int nNumber, int nNumerator, int nDenominator)
 
 void TVPWindowWindow::TranslateWindowToDrawArea(int &x, int &y)
 {
+#if defined(__linux__)
+	/* Linux presents through the window surface: TickBeat scales the engine's
+	 * own surface into it with SDL_BlitScaled, so the picture fills the whole
+	 * window and window coordinates have to be scaled back into engine
+	 * coordinates. Without this, choosing a smaller resolution in windowed
+	 * mode rescaled the picture while every click stayed at its old position
+	 * (the buttons looked right but were not where they were drawn).
+	 *
+	 * This is ONLY true for the software path, which is the one blitting the
+	 * engine surface into the window surface. As soon as a renderer exists,
+	 * SetPaintBoxSize installs SDL's logical size and SDL rewrites every
+	 * mouse event into those logical (= layer) coordinates on its own, see
+	 * SDL_render.c:SDL_RendererEventWatch. Scaling the already-scaled values
+	 * here applied the mapping twice - the pointer landed far from the cursor
+	 * and hit tests failed everywhere, which is the "mouse does nothing"
+	 * report. Upstream never translated at all and relied on SDL. */
+	if (!this->renderer && this->window && this->surface && this->surface->w > 0 && this->surface->h > 0)
+	{
+		int window_w = 0;
+		int window_h = 0;
+		SDL_GetWindowSize(this->window, &window_w, &window_h);
+		if (window_w > 0 && window_h > 0 &&
+			(window_w != this->surface->w || window_h != this->surface->h))
+		{
+			x = MulDiv(x, this->surface->w, window_w);
+			y = MulDiv(y, this->surface->h, window_h);
+		}
+	}
+#endif
 #ifdef KRKRSDL2_ENABLE_ZOOM
 #ifdef KRKRZ_ENABLE_CANVAS
 	if (this->context)
@@ -1681,8 +1788,115 @@ void TVPWindowWindow::TickBeat()
 		this->visibilityHasInitialized = true;
 		this->SetVisible(this->isVisible);
 	}
+#if defined(__linux__)
+	/* A playing movie owns the window. The decoder runs on its own thread and
+	 * publishes finished frames through the player owned by
+	 * tTJSNI_VideoOverlay, so the picture is uploaded and presented here and
+	 * the engine's own frame is skipped for as long as the movie lasts. */
+	bool video_presented = false;
+	if (TVPLinuxVideoIsActive())
+	{
+		const uint8_t *video_pixels = nullptr;
+		int video_pitch = 0;
+		int video_width = 0;
+		int video_height = 0;
+		bool video_is_new = false;
+		if (TVPLinuxVideoAcquireFrame(&video_pixels, &video_pitch, &video_width, &video_height, &video_is_new))
+		{
+			if (this->renderer)
+			{
+				if (this->videoTexture == nullptr ||
+					this->videoTextureWidth != video_width ||
+					this->videoTextureHeight != video_height)
+				{
+					if (this->videoTexture)
+					{
+						SDL_DestroyTexture(this->videoTexture);
+						this->videoTexture = nullptr;
+					}
+					/* BGRA rows from FFmpeg match ARGB8888 in little-endian memory. */
+					this->videoTexture = SDL_CreateTexture(this->renderer, SDL_PIXELFORMAT_ARGB8888,
+						SDL_TEXTUREACCESS_STREAMING, video_width, video_height);
+					this->videoTextureWidth = video_width;
+					this->videoTextureHeight = video_height;
+				}
+				if (this->videoTexture)
+				{
+					SDL_UpdateTexture(this->videoTexture, nullptr, video_pixels, video_pitch);
+					/* The renderer's logical size is the game resolution, so this
+					 * scales (and letterboxes) the movie like any other frame. */
+					SDL_RenderClear(this->renderer);
+					SDL_RenderCopy(this->renderer, this->videoTexture, nullptr, nullptr);
+					SDL_RenderPresent(this->renderer);
+					this->hasDrawn = true;
+				}
+			}
+			else if (this->window && video_is_new)
+			{
+				/* No renderer: wrap the decoded frame in a surface and scale it
+				 * into the window surface, mirroring the engine-picture path
+				 * further down. Only a freshly decoded frame is uploaded - the
+				 * window surface keeps its contents between uploads, and
+				 * re-blitting an unchanged 1920x1080 picture every iteration
+				 * would just burn CPU on a software-rendered host. */
+				SDL_Surface *window_surface = SDL_GetWindowSurface(this->window);
+				if (window_surface)
+				{
+					SDL_Surface *frame_surface = SDL_CreateRGBSurfaceFrom(
+						(void *)video_pixels, video_width, video_height, 32, video_pitch,
+						0x00ff0000, 0x0000ff00, 0x000000ff, 0);
+					if (frame_surface)
+					{
+						SDL_BlitScaled(frame_surface, nullptr, window_surface, nullptr);
+						SDL_FreeSurface(frame_surface);
+					}
+					SDL_Rect full;
+					full.x = 0;
+					full.y = 0;
+					full.w = window_surface->w;
+					full.h = window_surface->h;
+					SDL_UpdateWindowSurfaceRects(this->window, &full, 1);
+					this->hasDrawn = true;
+					static int video_soft_logs = 0;
+					if (video_soft_logs < 3)
+					{
+						SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+							"VIDEOSOFT frame=%dx%d window=%dx%d", video_width, video_height,
+							window_surface->w, window_surface->h);
+						video_soft_logs++;
+					}
+				}
+			}
+			TVPLinuxVideoReleaseFrame();
+			video_presented = true;
+		}
+	}
+	/* Reporting the end of the movie has to happen on this thread: SetStatus
+	 * delivers onStatusChanged inline and Movie.tjs's phase machine only
+	 * leaves "running" once it sees that stop. */
+	TVPLinuxVideoConsumeFinished();
+	/* Only skip the engine picture while a movie frame was actually drawn in
+	 * THIS iteration. Testing TVPLinuxVideoIsActive() instead kept returning
+	 * early after the movie had finished (the overlay stays active until
+	 * Movie.tjs closes it), so the engine never painted another frame and the
+	 * window went - and stayed - black. */
+	if (video_presented)
+	{
+		return;
+	}
+#endif
 	if (this->needsGraphicUpdate)
 	{
+		static int vidtick_dbg = 0;
+		if (vidtick_dbg < 5)
+		{
+			SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+				"VIDTICK needs=%d bmp=%p win=%p surf=%p rnd=%p shaderr=%s",
+				(int)this->needsGraphicUpdate, (void *)this->bitmapCompletion,
+				(void *)this->window, (void *)this->surface, (void *)this->renderer,
+				SDL_GetError());
+			vidtick_dbg++;
+		}
 		if (this->bitmapCompletion)
 		{
 			SDL_Rect rect;
@@ -1693,7 +1907,7 @@ void TVPWindowWindow::TickBeat()
 			if (this->renderer)
 			{
 #if defined(KRKRSDL2_ENABLE_ZOOM) || defined(KRKRSDL2_RENDERER_FULL_UPDATES)
-				SDL_RenderFillRect(this->renderer, nullptr);
+				SDL_RenderClear(this->renderer);
 #else
 				SDL_Rect logical_rect;
 				SDL_RenderGetLogicalSize(this->renderer, &(logical_rect.w), &(logical_rect.h));
@@ -1755,7 +1969,54 @@ void TVPWindowWindow::TickBeat()
 			}
 			else if (this->window && this->surface)
 			{
-				SDL_UpdateWindowSurfaceRects(this->window, &rect, 1);
+				/* No renderer (the Linux software path): scale the engine's own
+				 * drawing surface into the window surface, so a smaller window
+				 * shows a scaled-down picture instead of clipping a 1920x1080
+				 * one. This is what makes the resolution setting work. */
+				SDL_Surface *window_surface = SDL_GetWindowSurface(this->window);
+				static int soft_blit_logs = 0;
+				if (soft_blit_logs < 5)
+				{
+					SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+						"VIDREACH winsurf=%p same=%d winsurf_size=%dx%d rect=%d,%d %dx%d",
+						(void *)window_surface, window_surface == this->surface ? 1 : 0,
+						window_surface ? window_surface->w : 0, window_surface ? window_surface->h : 0,
+						rect.x, rect.y, rect.w, rect.h);
+					soft_blit_logs++;
+				}
+				if (window_surface != nullptr && window_surface != this->surface)
+				{
+					int blit = SDL_BlitScaled(this->surface, nullptr, window_surface, nullptr);
+					if (soft_blit_logs <= 5)
+					{
+						SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+							"VIDSOFTBLIT src=%dx%d dst=%dx%d result=%d err=%s",
+							this->surface->w, this->surface->h,
+							window_surface->w, window_surface->h,
+							blit, blit == 0 ? "-" : SDL_GetError());
+					}
+				}
+				// rect is in engine-surface (canvas) pixels, but the window may be
+				// larger - a 2K display forces a 2560x1440 window while the canvas stays
+				// 1920x1080. Scaling the dirty rect into window coordinates keeps the
+				// per-frame update cheap without leaving stale rows at the right and
+				// bottom edges (they showed up as a white band under the picture).
+				SDL_Rect window_rect = rect;
+				if (this->surface->w > 0 && this->surface->h > 0 &&
+				    (this->surface->w != window_surface->w || this->surface->h != window_surface->h))
+				{
+					const double scale_x = (double)window_surface->w / (double)this->surface->w;
+					const double scale_y = (double)window_surface->h / (double)this->surface->h;
+					window_rect.x = (int)(rect.x * scale_x);
+					window_rect.y = (int)(rect.y * scale_y);
+					window_rect.w = (int)(rect.w * scale_x) + 2;
+					window_rect.h = (int)(rect.h * scale_y) + 2;
+					if (window_rect.x < 0) window_rect.x = 0;
+					if (window_rect.y < 0) window_rect.y = 0;
+					if (window_rect.x + window_rect.w > window_surface->w) window_rect.w = window_surface->w - window_rect.x;
+					if (window_rect.y + window_rect.h > window_surface->h) window_rect.h = window_surface->h - window_rect.y;
+				}
+				SDL_UpdateWindowSurfaceRects(this->window, &window_rect, 1);
 				this->hasDrawn = true;
 			}
 			this->needsGraphicUpdate = false;
@@ -2144,6 +2405,34 @@ void TVPWindowWindow::SetDrawDeviceDestRect(void)
 		this->UpdateWindow(utNormal);
 	}
 #endif
+}
+
+void TVPWindowWindow::ZoomRectangle(tjs_int &left, tjs_int &top, tjs_int &right, tjs_int &bottom)
+{
+#ifdef KRKRSDL2_ENABLE_ZOOM
+	/* Same convention as krkrz's window form: scale the layer rectangle up to
+	 * window pixels so the video overlay matches the scaled layer. The offset
+	 * is added by the caller through GetVideoOffset. With the zoom option off
+	 * the window is 1:1 with the layer, so this is the identity. */
+	left = MulDiv(left, this->ActualZoomNumer, this->ActualZoomDenom);
+	top = MulDiv(top, this->ActualZoomNumer, this->ActualZoomDenom);
+	right = MulDiv(right, this->ActualZoomNumer, this->ActualZoomDenom);
+	bottom = MulDiv(bottom, this->ActualZoomNumer, this->ActualZoomDenom);
+#else
+	(void)left;
+	(void)top;
+	(void)right;
+	(void)bottom;
+#endif
+}
+
+void *TVPWindowWindow::GetNativeWindowHandle() const
+{
+	/* The SDL_Window is all this backend can hand out: the only video overlay
+	 * that asks for a real native handle is the macOS AVPlayer bridge, which is
+	 * not built here, and this SDL build ships no syswm backend to unwrap the
+	 * window any further (see the note in the constructor). */
+	return (void *)this->window;
 }
 
 void TVPWindowWindow::SetZoom(tjs_int numer, tjs_int denom, bool set_logical)
@@ -2723,6 +3012,32 @@ bool TVPWindowWindow::window_receive_event_input(SDL_Event event)
 				case SDL_FINGERDOWN:
 				case SDL_FINGERUP:
 				{
+					/* Two-finger tap maps to the right mouse button so touch
+					   devices can cancel/back out of movies and menus exactly
+					   like a right-click on desktop.  The second finger press
+					   sends mbRight down, and when fingers drop below two the
+					   corresponding up is delivered. */
+					int fingerCount = SDL_GetNumTouchFingers(event.tfinger.touchId);
+					if (event.tfinger.type == SDL_FINGERDOWN && fingerCount >= 2)
+					{
+						this->lastMouseX = static_cast<int>(event.tfinger.x * this->GetWidth());
+						this->lastMouseY = static_cast<int>(event.tfinger.y * this->GetHeight());
+						this->TranslateWindowToDrawArea(this->lastMouseX, this->lastMouseY);
+						tjs_uint32 s = TVP_TShiftState_To_uint32(GetShiftState());
+						s |= GetMouseButtonState();
+						s |= ssRight;
+						TVPPostInputEvent(new tTVPOnMouseDownInputEvent(this->TJSNativeInstance, this->lastMouseX, this->lastMouseY, tTVPMouseButton::mbRight, s));
+					}
+					else if (event.tfinger.type == SDL_FINGERUP && fingerCount <= 1)
+					{
+						this->lastMouseX = static_cast<int>(event.tfinger.x * this->GetWidth());
+						this->lastMouseY = static_cast<int>(event.tfinger.y * this->GetHeight());
+						this->TranslateWindowToDrawArea(this->lastMouseX, this->lastMouseY);
+						tjs_uint32 s = TVP_TShiftState_To_uint32(GetShiftState());
+						s |= GetMouseButtonState();
+						s &= ~ssRight;
+						TVPPostInputEvent(new tTVPOnMouseUpInputEvent(this->TJSNativeInstance, this->lastMouseX, this->lastMouseY, tTVPMouseButton::mbRight, s));
+					}
 					switch (event.tfinger.type)
 					{
 						case SDL_FINGERDOWN:

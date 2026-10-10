@@ -38,6 +38,7 @@
 #if 0
 #include "VSyncTimingThread.h"
 #include "MouseCursor.h"
+#include <SDL.h>
 #include "CanvasIntf.h"
 #endif
 
@@ -2060,6 +2061,7 @@ void TJS_INTF_METHOD tTJSNI_Window::NotifyLayerResize(class iTVPLayerManager* ma
 //---------------------------------------------------------------------------
 void TJS_INTF_METHOD tTJSNI_Window::NotifyLayerImageChange(class iTVPLayerManager* manager)
 {
+	SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LYRIMGCHG manager=%p", (void*)manager);
 	if( DrawDevice ) DrawDevice->NotifyLayerImageChange(manager);
 }
 //---------------------------------------------------------------------------
@@ -2295,6 +2297,26 @@ TJS_BEGIN_NATIVE_PROP_DECL(drawDevice)
 	TJS_END_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL_OUTER(cls, drawDevice)
+//---------------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(fullScreen)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		*result = _this->GetFullScreen();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		_this->SetFullScreen(((tjs_int)*param) ? true : false);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL_OUTER(cls, fullScreen)
 //---------------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(touchScaleThreshold)
 {

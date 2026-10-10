@@ -1,152 +1,73 @@
-//---------------------------------------------------------------------------
-/*
-	Video overlay interface compatibility layer for the SDL2 backend.
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) Kirikiri SDL2 Developers */
 
-	On the classic win32 path (KRKRSDL2_USE_WIN32_EVENT_QUEUE) the real
-	krmovie.h (DirectShow world) is used.  Everywhere else - including
-	MinGW/Windows builds that use the pure SDL event loop - we provide the
-	minimal type shims needed to implement iTVPVideoOverlay for the
-	SDL2/ffmpeg backend.
-*/
-//---------------------------------------------------------------------------
-#ifndef __VIDEO_OVERLAY_COMPAT_H__
-#define __VIDEO_OVERLAY_COMPAT_H__
-//---------------------------------------------------------------------------
+/* VideoOverlayCompat.h - Win32 type shims for the non-Windows video overlay
+ *
+ * VideoOvlImpl.h/.cpp are derived from the Win32 sources of Kirikiri Z and
+ * therefore mention a handful of Win32 types (BYTE / HWND / RECT / LONG_PTR /
+ * ...). Windows builds get the real ones from <windows.h>. The SDL2 and
+ * Linux/FFmpeg backends never touch a Win32 object - the movie is rendered into
+ * layer buffers or an SDL texture - so the plain stand-ins below are enough to
+ * compile the shared interface.
+ */
+
+#ifndef KRKRSDL2_VIDEO_OVERLAY_COMPAT_H
+#define KRKRSDL2_VIDEO_OVERLAY_COMPAT_H
+
 #if defined(_WIN32)
-#include "krmovie.h"
-#else
-//---------------------------------------------------------------------------
-#include <stdint.h>
-#include "tjsCommHead.h" // tjs_uint64 / tjs_int64 (matches call sites in VideoOvlImpl.cpp)
-//---------------------------------------------------------------------------
-#ifndef __stdcall
-#define __stdcall
+
+#include <windows.h>
+
+#else /* !_WIN32 */
+
+#include <cstddef>
+#include <cstdint>
+
+/* StorageImpl.h may already map these names onto the tjs types; only add the
+ * ones that are still missing (a #define is visible to #ifdef, a typedef is
+ * not - repeating an identical typedef is fine either way). */
+#ifndef BYTE
+typedef unsigned char BYTE;
 #endif
-//---------------------------------------------------------------------------
-typedef unsigned char	BYTE;
-typedef void*		HWND;
-typedef void*		HDC;
-typedef intptr_t	LONG_PTR;
-//---------------------------------------------------------------------------
-typedef struct tagRECT
+#ifndef DWORD
+typedef unsigned int DWORD;
+#endif
+#ifndef LONG
+typedef long LONG;
+#endif
+#ifndef UINT
+typedef unsigned int UINT;
+#endif
+#ifndef BOOL
+typedef int BOOL;
+#endif
+
+/* Same stand-in as the one DrawDevice.h uses for the non-Windows HWND. */
+typedef void *HWND;
+typedef void *HDC;
+
+#ifndef LONG_PTR
+# if defined(_WIN64)
+typedef long long LONG_PTR;
+# else
+typedef long LONG_PTR;
+# endif
+#endif
+
+/* No non-Windows header in this tree defines RECT yet. */
+struct RECT
 {
 	long left;
 	long top;
 	long right;
 	long bottom;
-} RECT, *LPRECT;
-//---------------------------------------------------------------------------
-enum tTVPVideoStatus
-{
-	vsStopped, vsPlaying, vsPaused, vsProcessing, vsEnded, vsReady
 };
-//---------------------------------------------------------------------------
-// iTVPVideoOverlay
-//---------------------------------------------------------------------------
-class iTVPVideoOverlay // this is not a COM object
-{
-public:
-	virtual void __stdcall AddRef() = 0;
-	virtual void __stdcall Release() = 0;
 
-	virtual void __stdcall SetWindow(HWND window) = 0;
-	virtual void __stdcall SetMessageDrainWindow(HWND window) = 0;
-	virtual void __stdcall SetRect(RECT *rect) = 0;
-	virtual void __stdcall SetVisible(bool b) = 0;
-	virtual void __stdcall Play() = 0;
-	virtual void __stdcall Stop() = 0;
-	virtual void __stdcall Pause() = 0;
-	virtual void __stdcall SetPosition(tjs_uint64 tick) = 0;
-	virtual void __stdcall GetPosition(tjs_uint64 *tick) = 0;
-	virtual void __stdcall GetStatus(tTVPVideoStatus *status) = 0;
-	virtual void __stdcall GetEvent(long *evcode, LONG_PTR *param1,
-			LONG_PTR *param2, bool *got) = 0;
+/* iTVPVideoOverlay is the Win32 krmovie interface. The SDL2/FFmpeg backends use
+ * their own players, but tTJSNI_VideoOverlay keeps a pointer member of this
+ * type, so the name has to exist on every platform. */
+class iTVPVideoOverlay;
 
-	virtual void __stdcall FreeEventParams(long evcode, LONG_PTR param1, LONG_PTR param2) = 0;
+#endif /* !_WIN32 */
 
-	virtual void __stdcall Rewind() = 0;
-	virtual void __stdcall SetFrame( int f ) = 0;
-	virtual void __stdcall GetFrame( int *f ) = 0;
-	virtual void __stdcall GetFPS( double *f ) = 0;
-	virtual void __stdcall GetNumberOfFrame( int *f ) = 0;
-	virtual void __stdcall GetTotalTime( tjs_int64 *t ) = 0;
-
-	virtual void __stdcall GetVideoSize( long *width, long *height ) = 0;
-	virtual void __stdcall GetFrontBuffer( BYTE **buff ) = 0;
-	virtual void __stdcall SetVideoBuffer( BYTE *buff1, BYTE *buff2, long size ) = 0;
-
-	virtual void __stdcall SetStopFrame( int frame ) = 0;
-	virtual void __stdcall GetStopFrame( int *frame ) = 0;
-	virtual void __stdcall SetDefaultStopFrame() = 0;
-
-	virtual void __stdcall SetPlayRate( double rate ) = 0;
-	virtual void __stdcall GetPlayRate( double *rate ) = 0;
-
-	virtual void __stdcall SetAudioBalance( long balance ) = 0;
-	virtual void __stdcall GetAudioBalance( long *balance ) = 0;
-	virtual void __stdcall SetAudioVolume( long volume ) = 0;
-	virtual void __stdcall GetAudioVolume( long *volume ) = 0;
-
-	virtual void __stdcall GetNumberOfAudioStream( unsigned long *streamCount ) = 0;
-	virtual void __stdcall SelectAudioStream( unsigned long num ) = 0;
-	virtual void __stdcall GetEnableAudioStreamNum( long *num ) = 0;
-	virtual void __stdcall DisableAudioStream( void ) = 0;
-
-	virtual void __stdcall GetNumberOfVideoStream( unsigned long *streamCount ) = 0;
-	virtual void __stdcall SelectVideoStream( unsigned long num ) = 0;
-	virtual void __stdcall GetEnableVideoStreamNum( long *num ) = 0;
-
-	virtual void __stdcall SetMixingBitmap( HDC hdc, RECT *dest, float alpha ) = 0;
-	virtual void __stdcall ResetMixingBitmap() = 0;
-
-	virtual void __stdcall SetMixingMovieAlpha( float a ) = 0;
-	virtual void __stdcall GetMixingMovieAlpha( float *a ) = 0;
-	virtual void __stdcall SetMixingMovieBGColor( unsigned long col ) = 0;
-	virtual void __stdcall GetMixingMovieBGColor( unsigned long *col ) = 0;
-
-	virtual void __stdcall PresentVideoImage() = 0;
-
-	virtual void __stdcall GetContrastRangeMin( float *v ) = 0;
-	virtual void __stdcall GetContrastRangeMax( float *v ) = 0;
-	virtual void __stdcall GetContrastDefaultValue( float *v ) = 0;
-	virtual void __stdcall GetContrastStepSize( float *v ) = 0;
-	virtual void __stdcall GetContrast( float *v ) = 0;
-	virtual void __stdcall SetContrast( float v ) = 0;
-
-	virtual void __stdcall GetBrightnessRangeMin( float *v ) = 0;
-	virtual void __stdcall GetBrightnessRangeMax( float *v ) = 0;
-	virtual void __stdcall GetBrightnessDefaultValue( float *v ) = 0;
-	virtual void __stdcall GetBrightnessStepSize( float *v ) = 0;
-	virtual void __stdcall GetBrightness( float *v ) = 0;
-	virtual void __stdcall SetBrightness( float v ) = 0;
-
-	virtual void __stdcall GetHueRangeMin( float *v ) = 0;
-	virtual void __stdcall GetHueRangeMax( float *v ) = 0;
-	virtual void __stdcall GetHueDefaultValue( float *v ) = 0;
-	virtual void __stdcall GetHueStepSize( float *v ) = 0;
-	virtual void __stdcall GetHue( float *v ) = 0;
-	virtual void __stdcall SetHue( float v ) = 0;
-
-	virtual void __stdcall GetSaturationRangeMin( float *v ) = 0;
-	virtual void __stdcall GetSaturationRangeMax( float *v ) = 0;
-	virtual void __stdcall GetSaturationDefaultValue( float *v ) = 0;
-	virtual void __stdcall GetSaturationStepSize( float *v ) = 0;
-	virtual void __stdcall GetSaturation( float *v ) = 0;
-	virtual void __stdcall SetSaturation( float v ) = 0;
-};
-//---------------------------------------------------------------------------
-// event/message codes shared with the win32 krmovie protocol
-//---------------------------------------------------------------------------
-#ifndef WM_USER
-#define WM_USER			0x0400
-#endif
-#define WM_GRAPHNOTIFY	(WM_USER+15)
-#define WM_CALLBACKCMD	(WM_USER+16)
-#define WM_STATE_CHANGE	(WM_USER+18)
-#define EC_COMPLETE		0x01
-#define EC_USER			0x8000
-#define EC_UPDATE		(EC_USER+1)
-//---------------------------------------------------------------------------
-#endif // !_WIN32
-//---------------------------------------------------------------------------
-#endif // __VIDEO_OVERLAY_COMPAT_H__
+#endif /* KRKRSDL2_VIDEO_OVERLAY_COMPAT_H */

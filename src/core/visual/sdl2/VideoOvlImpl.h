@@ -14,6 +14,8 @@
 #include "tjsNative.h"
 #include "WindowIntf.h"
 
+#include <cstdint>
+
 #include "VideoOvlIntf.h"
 #include "StorageIntf.h"
 #include "UtilStreams.h"
@@ -27,6 +29,9 @@
 // SDL2/ffmpeg backend (the win32 build gets them from windows headers)
 #include "VideoOverlayCompat.h"
 #endif
+#if defined(__linux__) && defined(KRKRSDL2_ENABLE_VIDEOOVERLAY)
+#define KRKRSDL2_LINUX_VIDEO_PLAYER 1
+#endif
 
 //---------------------------------------------------------------------------
 // tTJSNI_VideoOverlay : VideoOverlay Native Instance
@@ -37,6 +42,10 @@ class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay
 	typedef tTJSNI_BaseVideoOverlay inherited;
 
 	iTVPVideoOverlay *VideoOverlay;
+#ifdef KRKRSDL2_LINUX_VIDEO_PLAYER
+	class TVPLinuxVideoPlayer *LinuxPlayer;
+	bool LinuxFinishedReported;
+#endif
 
 	tTVPRect Rect;
 	bool Visible;
@@ -75,6 +84,15 @@ public:
 		iTJSDispatch2 *tjs_obj);
 	void TJS_INTF_METHOD Invalidate();
 
+#ifdef KRKRSDL2_LINUX_VIDEO_PLAYER
+	/* Called from the main thread once the decoder reached the end of the
+	 * movie; turns that into the onStatusChanged("stop") the TJS layer needs. */
+	void LinuxPlaybackFinished();
+	/* Render-thread accessors used by TVPLinuxVideo* in LinuxVideoPlayer.h. */
+	bool LinuxAcquireFrame(const uint8_t **pixels, int *pitch, int *width, int *height, bool *is_new);
+	void LinuxReleaseFrame();
+	bool LinuxIsFinished() const;
+#endif
 
 public:
 	void Open(const ttstr &name);
