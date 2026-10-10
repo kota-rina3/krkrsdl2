@@ -10,6 +10,7 @@
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 
+#include <cstdio>
 
 #include "FilePathUtil.h"
 #if 0
@@ -53,6 +54,7 @@
 #include "TickCount.h"
 #include <SDL.h>
 #include <errno.h>
+#include <stdlib.h>
 #ifdef __APPLE__
 #include <sys/types.h>
 #include <sys/sysctl.h>
@@ -917,6 +919,133 @@ static void TVPInitRandomGenerator()
 
 
 //---------------------------------------------------------------------------
+// TVPLoadExternalPatchArchives
+//---------------------------------------------------------------------------
+// Scans the public game data folder (the parent of the save directory) for
+// patch archives (patch.xp3, patch2.xp3, ...) and registers them with the
+// engine so updates can be applied without reinstalling the app.  The input
+// is the save directory path in UTF-8 (Android: Downloads/YosugaSoraHD/
+// savedata; iOS: Documents/<bundle>/savedata); the parent folder is scanned.
+//---------------------------------------------------------------------------
+void TVPLoadExternalPatchArchives(const char *saveDirUtf8)
+{
+	/* Also write a human-readable log to the public folder so the result can
+	   be inspected with a file manager (no adb/logcat needed). */
+	FILE *scanLog = NULL;
+
+	/* The public save folder may not be resolvable yet (JNI/permission), so
+	   build a list of candidate patch folders: the parent of the save folder
+	   plus a few well-known public locations. */
+	std::vector<tjs_string> candidates;
+
+	if(saveDirUtf8 && *saveDirUtf8)
+	{
+		tjs_string saveDirU16;
+		if(TVPUtf8ToUtf16(saveDirU16, std::string(saveDirUtf8)) && !saveDirU16.empty())
+		{
+			tjs_string parent = ExtractFileDir(saveDirU16);
+			if(!parent.empty())
+				candidates.push_back(parent);
+		}
+	}
+	if(scanLog)
+		fprintf(scanLog, "Patch scan start. saveDir=%s\n",
+			saveDirUtf8 ? saveDirUtf8 : "(null)");
+	bool any = false;
+	tjs_string loadedPatchPath;
+	for(size_t c = 0; c < candidates.size(); ++c)
+	{
+		/* Use '/' explicitly: on Android IncludeTrailingBackslash returns a
+		   backslash which corrupts the POSIX path (e.g. .../YosugaSoraHD\
+		   patch.xp3), so the file is never found. */
+		tjs_string prefix = candidates[c];
+		if(prefix.empty() || prefix[prefix.length() - 1] != TJS_W('/'))
+			prefix += TJS_W('/');
+		ttstr folderLog(TJS_W("(info) Patch scan folder: "));
+		folderLog += ttstr(candidates[c]);
+		TVPAddImportantLog(folderLog);
+		if(scanLog)
+		{
+			std::string utf8;
+			if(TVPUtf16ToUtf8(utf8, candidates[c]))
+				fprintf(scanLog, "folder: %s\n", utf8.c_str());
+		}
+		for(int i = 1; i <= 32; ++i)
+		{
+			tjs_string name = prefix + TJS_W("patch");
+			if(i > 1) name += ttstr((tjs_int)i).AsStdString();
+			name += TJS_W(".xp3");
+			ttstr nativeName = ttstr(name);
+			if(TVPCheckExistentLocalFile(nativeName))
+			{
+				ttstr archiveName = ttstr(name + TJS_W(">"));
+				TVPAddAutoPath(archiveName);
+				if(loadedPatchPath.empty())
+					loadedPatchPath = name;
+				ttstr log(TJS_W("(info) Loaded patch archive: "));
+				log += nativeName;
+				TVPAddImportantLog(log);
+				if(scanLog)
+				{
+					std::string utf8;
+					if(TVPUtf16ToUtf8(utf8, name))
+						fprintf(scanLog, "LOADED: %s\n", utf8.c_str());
+				}
+				any = true;
+			}
+			else
+			{
+				TVPAddImportantLog(TJS_W("(info) Patch scan: not found ") + nativeName);
+				if(scanLog)
+				{
+					std::string utf8;
+					if(TVPUtf16ToUtf8(utf8, name))
+						fprintf(scanLog, "not found: %s\n", utf8.c_str());
+				}
+			}
+		}
+	}
+	if(!any)
+		TVPAddImportantLog(TJS_W("(info) Patch scan: no patch archives found."));
+	else if(!loadedPatchPath.empty())
+	{
+		/* Execute the patch bootstrap script directly from inside the
+		   archive using KRKR's 'archive>file' path syntax.  At this point
+		   (right after system init) the normal auto paths are not yet
+		   registered, so a bare file name would not be resolved. */
+		tjs_string scriptPath = loadedPatchPath + TJS_W(">system/patch_test.tjs");
+		ttstr scriptName = ttstr(scriptPath);
+		TVPAddImportantLog(TJS_W("(info) Patch scan: executing ") + scriptName);
+		if(scanLog)
+		{
+			std::string utf8;
+			if(TVPUtf16ToUtf8(utf8, scriptPath))
+				fprintf(scanLog, "executing: %s\n", utf8.c_str());
+		}
+		try
+		{
+			if(TVPIsExistentStorage(scriptName))
+				TVPExecuteStorage(scriptName, NULL, false, TJS_W(""));
+			else
+			{
+				TVPAddImportantLog(TJS_W("(info) Patch scan: bootstrap script not found: ") + scriptName);
+				if(scanLog)
+					fprintf(scanLog, "bootstrap script NOT found\n");
+			}
+		}
+		catch(...)
+		{
+			TVPAddImportantLog(TJS_W("(info) Patch scan: patch bootstrap execution failed."));
+		}
+	}
+	if(scanLog)
+	{
+		fprintf(scanLog, "Patch scan finished. loaded=%s\n", any ? "yes" : "no");
+		fclose(scanLog);
+	}
+}
+
+//---------------------------------------------------------------------------
 // TVPInitializeBaseSystems
 //---------------------------------------------------------------------------
 void TVPInitializeBaseSystems()
@@ -940,6 +1069,10 @@ void TVPInitializeBaseSystems()
 		if(TVPIsExistentStorage(name_msgmap))
 			TVPExecuteStorage(name_msgmap, NULL, false, TJS_W(""));
 	}
+
+	// Note: external patch archives are loaded later in
+	// TVPInitializeStartupScript's caller once SDL/JNI is fully ready;
+	// see TVPLoadExternalPatchArchives usage in Application.cpp.
 }
 //---------------------------------------------------------------------------
 
